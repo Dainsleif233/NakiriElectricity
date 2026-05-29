@@ -15,6 +15,7 @@
 - 🎨 **现代化 UI**：基于 Tailwind CSS，完美适配移动端，支持深色模式 (Dark Mode)。
 - 🤖 **全自动运行**：利用 GitHub Actions 自动抓取数据，无需人工干预。
 - ⚡ **智能预测**：基于历史数据估算剩余可用天数，检测充值记录。
+- 🔔 **低电量提醒**：当最新电量低于阈值且本次有新提交时，自动给该 commit 添加提醒评论。
 
 ## 🚀 快速部署 (Fork & Run)
 
@@ -26,7 +27,7 @@
 ### 2. 配置环境变量 (Secrets)
 进入你 Fork 后的仓库，点击 `Settings` -> `Secrets and variables` -> `Actions` -> `New repository secret`。
 
-添加以下 5 个 Secret（必须大写）：
+添加以下 6 个 Secret（必须大写）：
 
 | Secret Name | 说明 | 示例 |
 |Data | Description | Example |
@@ -36,8 +37,10 @@
 | `BUILDING` | 区域 | `C区` |
 | `FLOOR` | 楼栋 | `1` |
 | `ROOM` | 房间 | `1-1-101` |
+| `THRESHOLD` | 低电量提醒阈值，可选，默认 `30` | `30` |
 
 **房间信息需要和小程序中的房间信息一致。**
+如果未配置 `THRESHOLD`，工作流会默认在电量低于 `30` 时触发提醒评论。
 
 #### 令牌获取方式：
 
@@ -88,6 +91,9 @@ A: 刚部署时没有历史数据。请等待 Actions 运行几次，或者手�
 
 **Q: 部署失败怎么办？**
 A: 检查 Actions 日志，通常是环境变量配置错误。
+
+**Q: 低电量提醒什么时候会触发？**
+A: 当 `public/data.json` 中最新一条历史记录的电量小于 `THRESHOLD` 时，工作流会自动给新的 commit 添加评论提醒。
 
 ## 📄 许可证
 

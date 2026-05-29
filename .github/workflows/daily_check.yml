@@ -42,21 +42,51 @@ jobs:
           ROOM: ${{ secrets.ROOM }}
         run: |
           echo "Starting scraper..."
-          node scripts/scrape.js
+          if ! node scripts/scrape.js; then
+            echo "Scraper failed, exiting gracefully."
+            echo "scrape_status=failed" >> $GITHUB_OUTPUT
+            exit 0
+          fi
           echo "scrape_status=success" >> $GITHUB_OUTPUT
         continue-on-error: false
 
+      - name: Check Threshold
+        id: threshold
+        if: steps.scrape.outputs.scrape_status == 'success'
+        env:
+          THRESHOLD: ${{ secrets.THRESHOLD || '30' }}
+        run: |
+          node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('public/data.json','utf8')); const history=Array.isArray(data.history)?data.history:[]; const latest=history[history.length-1]; const currentKwh=latest?.kWh; const threshold=Number(process.env.THRESHOLD || 30); if (typeof currentKwh !== 'number' || Number.isNaN(currentKwh)) { console.log('No valid kWh found, treating as not below threshold.'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'current_kwh=\n'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'threshold=' + threshold + '\n'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'is_below_threshold=false\n'); process.exit(0); } console.log('Current kWh: ' + currentKwh + ', threshold: ' + threshold); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'current_kwh=' + currentKwh + '\n'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'threshold=' + threshold + '\n'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'is_below_threshold=' + String(currentKwh < threshold) + '\n');"
+
       - name: Commit and Push changes
+        id: commit
+        if: steps.scrape.outputs.scrape_status == 'success'
         run: |
           git add public/data.json
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if git diff --cached --quiet; then
             echo "No changes to commit."
+            echo "committed=false" >> $GITHUB_OUTPUT
             exit 0
           fi
           git commit -m "chore: update electricity data [skip ci]"
+          echo "commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          echo "committed=true" >> $GITHUB_OUTPUT
           git push
+
+      - name: Comment On Low Balance Commit
+        if: steps.commit.outputs.committed == 'true' && steps.threshold.outputs.is_below_threshold == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: '${{ steps.commit.outputs.commit_sha }}',
+              body: '当前电量为 ${{ steps.threshold.outputs.current_kwh }}，已不足 ${{ steps.threshold.outputs.threshold }}，请尽快充值！'
+            })
 
       - name: Notify on failure
         if: failure()
