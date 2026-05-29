@@ -49,19 +49,13 @@ jobs:
       - name: Check for changes
         id: check_changes
         run: |
-          if git ls-files --error-unmatch public/data.json &gt;/dev/null 2&gt;&amp;1; then
-            # 文件已被追踪，检查是否有变化
-            if git diff --quiet public/data.json; then
-              echo "has_changes=false" &gt;&gt; $GITHUB_OUTPUT
-              echo "No changes detected in data.json"
-            else
-              echo "has_changes=true" &gt;&gt; $GITHUB_OUTPUT
-              echo "Changes detected in data.json"
-            fi
-          else
-            # 文件未被追踪（新文件），视为有变化
+          # 检查 git status 来检测是否有变化（包括新文件和修改）
+          if git status --porcelain public/data.json | grep -q .; then
             echo "has_changes=true" &gt;&gt; $GITHUB_OUTPUT
-            echo "New file data.json detected"
+            echo "Changes detected in data.json"
+          else
+            echo "has_changes=false" &gt;&gt; $GITHUB_OUTPUT
+            echo "No changes detected in data.json"
           fi
 
       - name: Commit and Push changes
