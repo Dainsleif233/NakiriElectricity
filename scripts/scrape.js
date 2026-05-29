@@ -145,7 +145,7 @@ async function main() {
             if (shouldAdd) {
                 data.history.push({
                     timestamp: timestamp,
-                    room_id: ENV.ROOM_ID,
+                    room_id: ENV.ROOM,
                     kWh: kwh
                 });
                 console.log(`✓ Added new entry to history (${data.history.length} total)`);
