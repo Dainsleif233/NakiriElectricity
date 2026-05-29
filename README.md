@@ -52,7 +52,7 @@
 ### 4. 开启 GitHub Pages
 进入 `Settings` -> `Pages`。
 - **Source**: 选择 `Deploy from a branch`
-- **Branch**: 选择 `main`，文件夹选择 `/`
+- **Branch**: 选择 `main`，文件夹选择 `/ (root)`
 - 点击 **Save**。
 
 等待几分钟，你的专属电量监控页面就上线了！🎉
