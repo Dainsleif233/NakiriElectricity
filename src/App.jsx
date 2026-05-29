@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
-import { format, subDays, subHours, differenceInDays, parseISO, startOfDay, isSameDay } from 'date-fns';
-import { Moon, Sun, Zap, Activity, RefreshCw, TrendingDown, TrendingUp, BatteryCharging, Clock, CalendarClock, CalendarDays, History, Home, CloudLightning, AlertCircle } from 'lucide-react';
+import { format, subDays, differenceInDays } from 'date-fns';
+import { Moon, Sun, Zap, Activity, RefreshCw, TrendingDown, TrendingUp, BatteryCharging, CalendarClock, CalendarDays, Home, CloudLightning, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -11,11 +11,16 @@ function cn(...inputs) {
   return twMerge(clsx(inputs));
 }
 
+function formatInteger(value) {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue.toFixed(0) : '-';
+}
+
 const TIME_RANGES = [
-  { label: '24小时', days: 1 },
-  { label: '3天', days: 3 },
   { label: '7天', days: 7 },
+  { label: '14天', days: 14 },
   { label: '30天', days: 30 },
+  { label: '60天', days: 60 },
 ];
 
 // --- Components ---
@@ -174,8 +179,8 @@ export default function App() {
   const handleManualScrape = () => {
       window.open(
         'https://github.com/' + 
-        (window.location.hostname.split('.')[0] || 'your-username') + 
-        '/Nakiri-Electricity-Github/actions',
+        (window.location.hostname.split('.')[0] || 'Dainsleif233') + 
+        '/NakiriElectricity/actions',
         '_blank'
       );
   };
@@ -260,8 +265,22 @@ export default function App() {
         return sum;
     };
 
-    const threeHoursAgo = subHours(now, 3);
-    const consumption3h = getConsumption(threeHoursAgo);
+    const getLatestPointConsumption = (days) => {
+        const latestRecord = roomData[roomData.length - 1];
+        const targetTime = subDays(new Date(latestRecord.timestamp), days);
+
+        for (let i = roomData.length - 2; i >= 0; i--) {
+            const recordTime = new Date(roomData[i].timestamp);
+            if (recordTime <= targetTime) {
+                const diff = roomData[i].kWh - latestRecord.kWh;
+                return diff > 0 ? diff : 0;
+            }
+        }
+
+        return 0;
+    };
+
+    const consumptionDaily = getLatestPointConsumption(1);
 
     const dailyMap = {};
     roomData.forEach(d => {
@@ -269,17 +288,30 @@ export default function App() {
         if (!dailyMap[day]) dailyMap[day] = [];
         dailyMap[day].push(d.kWh);
     });
-    
+
+    const sortedDates = Object.keys(dailyMap).sort();
+    const getDayLastKWh = (date) => {
+        const values = dailyMap[date];
+        return values && values.length > 0 ? values[values.length - 1] : null;
+    };
+    const getNextDayFirstKWh = (date) => {
+        const idx = sortedDates.indexOf(date);
+        return idx >= 0 && idx < sortedDates.length - 1 ? dailyMap[sortedDates[idx + 1]][0] : null;
+    };
+
     let maxDaily = { val: 0, date: '-' };
     let minDaily = { val: 9999, date: '-' };
-    
-    Object.entries(dailyMap).forEach(([date, values]) => {
-        if (values.length < 2) return;
+
+    sortedDates.forEach(date => {
+        const lastKWh = getDayLastKWh(date);
+        const nextFirstKWh = getNextDayFirstKWh(date);
+        if (lastKWh === null || nextFirstKWh === null) return;
+
         let dailySum = 0;
-        for(let i=0; i<values.length-1; i++) {
-             if (values[i] > values[i+1]) dailySum += (values[i] - values[i+1]);
+        if (lastKWh > nextFirstKWh) {
+            dailySum = lastKWh - nextFirstKWh;
         }
-        
+
         if (dailySum > 0.1) {
             if (dailySum > maxDaily.val) maxDaily = { val: dailySum, date: date.slice(5) };
             if (dailySum < minDaily.val) minDaily = { val: dailySum, date: date.slice(5) };
@@ -302,28 +334,33 @@ export default function App() {
         }
     }
 
-    let daysRemaining = 0;
-    const dailyAvg = consumption24h > 0.1 ? consumption24h : (consumption7d / 7 || 5);
-    if (dailyAvg > 0) daysRemaining = currentKWh / dailyAvg;
+    let daysRemaining = '0';
+    const dailyAvg = consumption7d / 7;
+    if (dailyAvg > 0) daysRemaining = (currentKWh / dailyAvg).toFixed(0);
 
     const daysSinceRecharge = lastRechargeTime 
         ? differenceInDays(now, new Date(lastRechargeTime)) 
         : '-';
 
     return {
-        current: currentKWh.toFixed(1),
-        cons3h: consumption3h.toFixed(2),
-        maxDaily: maxDaily,
-        minDaily: minDaily,
-        cons24h: consumption24h.toFixed(2),
-        cons7d: consumption7d.toFixed(2),
+        current: formatInteger(currentKWh),
+        consDaily: formatInteger(consumptionDaily),
+        maxDaily: {
+            ...maxDaily,
+            val: formatInteger(maxDaily.val)
+        },
+        minDaily: {
+            ...minDaily,
+            val: formatInteger(minDaily.val)
+        },
+        cons30d: formatInteger(getConsumption(subDays(now, 30))),
         lastRecharge: {
             date: lastRechargeTime ? format(new Date(lastRechargeTime), 'MM-dd') : '-',
             time: lastRechargeTime ? format(new Date(lastRechargeTime), 'HH:mm') : '',
-            amount: lastRechargeAmount > 0 ? lastRechargeAmount.toFixed(0) : '-',
+            amount: lastRechargeAmount > 0 ? formatInteger(lastRechargeAmount) : '-',
             daysAgo: daysSinceRecharge
         },
-        estimateDays: daysRemaining.toFixed(1)
+        estimateDays: daysRemaining
     };
 
   }, [rawData, targetRoom]);
@@ -411,22 +448,22 @@ export default function App() {
                         highlight={true}
                     />
                     <StatCard 
-                        title="近3小时消耗" 
-                        value={`${stats.cons3h} kWh`} 
-                        subtext="实时波动" 
+                        title="昨日消耗" 
+                        value={`${stats.consDaily} kWh`} 
+                        subtext="最近波动" 
                         icon={Activity} 
                         delay={2} 
                     />
                     <StatCard 
                         title="单日最大消耗" 
-                        value={`${stats.maxDaily.val.toFixed(1)} kWh`} 
+                        value={`${stats.maxDaily.val} kWh`} 
                         subtext={stats.maxDaily.date} 
                         icon={TrendingUp} 
                         delay={3} 
                     />
                     <StatCard 
                         title="单日最小消耗" 
-                        value={`${stats.minDaily.val.toFixed(1)} kWh`} 
+                        value={`${stats.minDaily.val} kWh`} 
                         subtext={stats.minDaily.date} 
                         icon={TrendingDown} 
                         delay={4} 
@@ -468,11 +505,11 @@ export default function App() {
                   
                   <div className="grid grid-cols-3 gap-2 mb-2">
                     <StatCard 
-                        title="24h消耗" 
-                        value={stats.cons24h} 
+                        title="30天消耗" 
+                        value={stats.cons30d} 
                         subtext="kWh" 
-                        icon={Clock} 
-                        delay={5}
+                        icon={CalendarDays} 
+                        delay={8}
                         compact={true} 
                     />
                     <StatCard 
@@ -489,33 +526,6 @@ export default function App() {
                         subtext="天" 
                         icon={CalendarClock} 
                         delay={7}
-                        compact={true}
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-2">
-                    <StatCard 
-                        title="7天消耗" 
-                        value={stats.cons7d} 
-                        subtext="kWh" 
-                        icon={CalendarDays} 
-                        delay={8}
-                        compact={true} 
-                    />
-                    <StatCard 
-                        title="充值金额" 
-                        value={stats.lastRecharge.amount} 
-                        subtext="kWh (估算)"
-                        icon={Zap} 
-                        delay={9}
-                        compact={true}
-                    />
-                    <StatCard 
-                        title="距充值" 
-                        value={stats.lastRecharge.daysAgo} 
-                        subtext="天" 
-                        icon={History} 
-                        delay={10}
                         compact={true}
                     />
                   </div>
@@ -559,20 +569,27 @@ export default function App() {
                       </defs>
                       <CartesianGrid strokeDasharray="3 3" stroke={darkMode ? "#333" : "#eee"} vertical={false} />
                       <XAxis 
-                        dataKey="displayTime" 
+                        dataKey="timestamp"
+                        type="number"
+                        scale="time"
+                        domain={['dataMin', 'dataMax']}
                         stroke={darkMode ? "#666" : "#999"} 
                         fontSize={12} 
                         tickMargin={10}
                         minTickGap={40}
+                        tickFormatter={(value) => format(new Date(value), timeRange <= 7 ? "MM-dd HH:mm" : "MM-dd")}
                       />
                       <YAxis 
                         width={45}
                         stroke={darkMode ? "#666" : "#999"} 
                         fontSize={12} 
                         domain={['auto', 'auto']}
+                        tickFormatter={(value) => formatInteger(value)}
                         allowDataOverflow={false} 
                       />
                       <Tooltip 
+                        labelFormatter={(value) => format(new Date(value), "yyyy-MM-dd HH:mm")}
+                        formatter={(value) => [`${formatInteger(value)} kWh`, '剩余电量']}
                         contentStyle={{ 
                           backgroundColor: darkMode ? 'rgba(24, 24, 27, 0.9)' : 'rgba(255, 255, 255, 0.9)',
                           borderColor: darkMode ? '#333' : '#eee',
