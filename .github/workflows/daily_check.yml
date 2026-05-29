@@ -35,9 +35,11 @@ jobs:
       - name: Run Scraper
         id: scrape
         env:
-          ROOM_ID: ${{ secrets.ROOM_ID }}
-          PART_ID: ${{ secrets.PART_ID }}
-          BUILD_ID: ${{ secrets.BUILD_ID }}
+          TOKEN: ${{ secrets.TOKEN }}
+          CAMPUS: ${{ secrets.CAMPUS }}
+          BUILDING: ${{ secrets.BUILDING }}
+          FLOOR: ${{ secrets.FLOOR }}
+          ROOM: ${{ secrets.ROOM }}
         run: |
           echo "Starting scraper..."
           node scripts/scrape.js
@@ -61,8 +63,8 @@ jobs:
         with:
           commit_message: "chore: update electricity data [skip ci]"
           file_pattern: public/data.json
-          commit_user_name: GitHub Actions Bot
-          commit_user_email: actions@github.com
+          commit_user_name: github-actions[bot]
+          commit_user_email: github-actions[bot]@users.noreply.github.com
 
       - name: Notify on failure
         if: failure()

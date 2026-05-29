@@ -1,6 +1,6 @@
 # Nakiri Electricity (GitHub Pages Version)
 
-[![Daily Electricity Check](https://github.com/Polaris-Leo/Nakiri-Electricity-Github/actions/workflows/daily_check.yml/badge.svg)](https://github.com/Polaris-Leo/Nakiri-Electricity-Github/actions/workflows/daily_check.yml)
+[![Daily Electricity Check](https://github.com/Dainsleif233/NakiriElectricity/actions/workflows/daily_check.yml/badge.svg)](https://github.com/Dainsleif233/NakiriElectricity/actions/workflows/daily_check.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 这是一个基于 **React** 和 **GitHub Actions** 的无服务器电量监测系统。
@@ -26,18 +26,24 @@
 ### 2. 配置环境变量 (Secrets)
 进入你 Fork 后的仓库，点击 `Settings` -> `Secrets and variables` -> `Actions` -> `New repository secret`。
 
-添加以下 3 个 Secret（必须大写）：
+添加以下 5 个 Secret（必须大写）：
 
 | Secret Name | 说明 | 示例 |
 |Data | Description | Example |
 |---|---|---|
-| `PART_ID` | 校区 (奉贤/徐汇) | `奉贤` |
-| `BUILD_ID` | 楼号 | `18` |
-| `ROOM_ID` | 宿舍号 | `101` |
+| `TOKEN` | 令牌 | `eyXXX` |
+| `CAMPUS` | 校区 | `校本部` |
+| `BUILDING` | 区域 | `C区` |
+| `FLOOR` | 楼栋 | `1` |
+| `ROOM` | 房间 | `1-1-101` |
 
-#### 特殊楼栋配置示例：
-- **徐汇南区4A**：`PART_ID=徐汇`, `BUILD_ID=南区4A`, `ROOM_ID=101`
-- **奉贤5号楼**：`PART_ID=奉贤`, `BUILD_ID=5`, `ROOM_ID=202`
+**房间信息需要和小程序中的房间信息一致。**
+
+#### 令牌获取方式：
+
+- 打开 [综合门户](http://ehall.ujs.edu.cn/) 登入账号。
+- 搜索打开 `一卡通服务`，右上角打开用户设置。
+- 此时 URL 中 `synjones-auth` 值就是需要的令牌，注意不要泄露。
 
 ### 3. 启用 GitHub Actions
 进入 `Actions` 标签页，点击 `I understand my workflows, go ahead and enable them`。
@@ -46,7 +52,7 @@
 ### 4. 开启 GitHub Pages
 进入 `Settings` -> `Pages`。
 - **Source**: 选择 `Deploy from a branch`
-- **Branch**: 选择 `main` (或者 `master`)，文件夹选择 `/ (root)`
+- **Branch**: 选择 `main`，文件夹选择 `/`
 - 点击 **Save**。
 
 等待几分钟，你的专属电量监控页面就上线了！🎉
@@ -57,8 +63,8 @@
 
 1. **克隆仓库**
    ```bash
-   git clone https://github.com/your-username/Nakiri-Electricity-Github.git
-   cd Nakiri-Electricity-Github
+   git clone https://github.com/Dainsleif233/NakiriElectricity.git
+   cd NakiriElectricity
    ```
 
 2. **安装依赖**
@@ -77,13 +83,13 @@
 ## ❓ 常见问题 (FAQ)
 
 **Q: 数据多久更新一次？**
-A: 默认每小时更新一次（GitHub Actions 定时任务）。你也可以在 Actions 页面手动触发更新。
+A: 默认每3小时更新一次（GitHub Actions 定时任务）。你也可以在 Actions 页面手动触发更新。
 
 **Q: 为什么图表显示“暂无数据”？**
 A: 刚部署时没有历史数据。请等待 Actions 运行几次，或者手动触发几次以积累数据。
 
 **Q: 部署失败怎么办？**
-A: 检查 Actions 日志，通常是环境变量配置错误（如楼号不对）。
+A: 检查 Actions 日志，通常是环境变量配置错误。
 
 ## 📄 许可证
 

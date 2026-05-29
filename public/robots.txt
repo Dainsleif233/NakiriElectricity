@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://github.com/your-username/Nakiri-Electricity-Github/sitemap.xml
