@@ -110,10 +110,10 @@ async function main() {
 
     // 3. 抓取数据
     try {
-        const data = await fetchWithRetry(BASE_URL, params);
+        const eleData = await fetchWithRetry(BASE_URL, params);
 
-        if (data.showData && data.data) {
-            const kwh = data.data.lastSd;
+        if (eleData.showData && eleData.data) {
+            const kwh = eleData.data.lastSd;
             const now = new Date();
             const timestamp = now.toISOString();
 
