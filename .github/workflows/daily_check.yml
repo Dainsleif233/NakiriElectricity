@@ -46,14 +46,17 @@ jobs:
           echo "scrape_status=success" >> $GITHUB_OUTPUT
         continue-on-error: false
 
-      - name: Stage data file
-        run: git add public/data.json
-
       - name: Commit and Push changes
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "chore: update electricity data [skip ci]"
-          file_pattern: public/data.json
+        run: |
+          git add public/data.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: update electricity data [skip ci]"
+          git push
 
       - name: Notify on failure
         if: failure()
