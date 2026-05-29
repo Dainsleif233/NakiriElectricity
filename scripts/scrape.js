@@ -59,7 +59,7 @@ async function fetchWithRetry(url, params, retries = MAX_RETRIES) {
                 body: params,
                 headers: {
                     "Content-Type": "application/x-www-form-urlencoded",
-                    "Synjones-Auth": ENV.TOKEN
+                    "Synjones-Auth": `bearer ${ENV.TOKEN}`
                 },
                 timeout: 10000 // 10s timeout
             });
