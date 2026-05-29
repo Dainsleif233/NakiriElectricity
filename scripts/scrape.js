@@ -113,7 +113,7 @@ async function main() {
         const eleData = await fetchWithRetry(BASE_URL, params);
 
         if (eleData.showData && eleData.data) {
-            const kwh = eleData.data.lastSd;
+            const kwh = Number(eleData.data.lastSd);
             const now = new Date();
             const timestamp = now.toISOString();
 
