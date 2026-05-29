@@ -54,9 +54,6 @@ jobs:
         with:
           commit_message: "chore: update electricity data [skip ci]"
           file_pattern: public/data.json
-          commit_user_name: github-actions[bot]
-          commit_user_email: github-actions[bot]@users.noreply.github.com
-          push_as_authenticated_user: false
 
       - name: Notify on failure
         if: failure()

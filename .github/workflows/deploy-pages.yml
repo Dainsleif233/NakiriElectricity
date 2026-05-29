@@ -5,10 +5,10 @@ on:
   push:
     branches: [ "main" ]
   # 当数据更新 workflow 完成后触发
-  workflow_run:
-    workflows: ["Daily Electricity Check"]
-    types:
-      - completed
+  # workflow_run:
+  #   workflows: ["Daily Electricity Check"]
+  #   types:
+  #     - completed
   # 允许手动触发
   workflow_dispatch:
 
