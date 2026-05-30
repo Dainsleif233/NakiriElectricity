@@ -1,14 +1,41 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
-import { format, subDays, differenceInDays } from 'date-fns';
-import { Moon, Sun, Zap, Activity, RefreshCw, TrendingDown, TrendingUp, BatteryCharging, CalendarClock, CalendarDays, Home, CloudLightning, AlertCircle } from 'lucide-react';
+import { Moon, Sun, Zap, Activity, RefreshCw, TrendingDown, TrendingUp, BatteryCharging, CalendarClock, CalendarDays, Home, Github, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { clsx } from 'clsx';
-import { twMerge } from 'tailwind-merge';
 
 // --- Utility ---
 function cn(...inputs) {
-  return twMerge(clsx(inputs));
+  return inputs.filter(Boolean).join(' ');
+}
+
+function padNumber(value) {
+  return String(value).padStart(2, '0');
+}
+
+function formatDate(value, pattern) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+
+  const tokens = {
+    yyyy: String(date.getFullYear()),
+    MM: padNumber(date.getMonth() + 1),
+    dd: padNumber(date.getDate()),
+    HH: padNumber(date.getHours()),
+    mm: padNumber(date.getMinutes()),
+  };
+
+  return pattern.replace(/yyyy|MM|dd|HH|mm/g, token => tokens[token]);
+}
+
+function subDays(value, days) {
+  const date = value instanceof Date ? value : new Date(value);
+  return new Date(date.getTime() - days * 24 * 60 * 60 * 1000);
+}
+
+function differenceInDays(laterDate, earlierDate) {
+  const later = laterDate instanceof Date ? laterDate : new Date(laterDate);
+  const earlier = earlierDate instanceof Date ? earlierDate : new Date(earlierDate);
+  return Math.floor((later.getTime() - earlier.getTime()) / (24 * 60 * 60 * 1000));
 }
 
 function formatInteger(value) {
@@ -175,16 +202,6 @@ export default function App() {
       }
   }, []);
 
-  // 核心功能：手动触发爬虫 (GitHub Pages 版本) - 提示用户手动触发 GitHub Actions
-  const handleManualScrape = () => {
-      window.open(
-        'https://github.com/' + 
-        (window.location.hostname.split('.')[0] || 'Dainsleif233') + 
-        '/NakiriElectricity/actions',
-        '_blank'
-      );
-  };
-
   // Initial Config & Data Fetch
   useEffect(() => {
       fetchData(true);
@@ -218,12 +235,12 @@ export default function App() {
     filtered.forEach(item => {
       try {
         const dateObj = new Date(item.timestamp);
-        const key = format(dateObj, "yyyy-MM-dd HH:mm");
+        const key = formatDate(dateObj, "yyyy-MM-dd HH:mm");
         
         if (!groupedMap.has(key)) {
           groupedMap.set(key, { 
             timestamp: dateObj.getTime(), 
-            displayTime: format(dateObj, "MM-dd HH:mm"),
+            displayTime: formatDate(dateObj, "MM-dd HH:mm"),
             fullDate: dateObj,
             val: null
           });
@@ -284,7 +301,7 @@ export default function App() {
 
     const dailyMap = {};
     roomData.forEach(d => {
-        const day = format(new Date(d.timestamp), 'yyyy-MM-dd');
+        const day = formatDate(new Date(d.timestamp), 'yyyy-MM-dd');
         if (!dailyMap[day]) dailyMap[day] = [];
         dailyMap[day].push(d.kWh);
     });
@@ -355,8 +372,8 @@ export default function App() {
         },
         cons30d: formatInteger(getConsumption(subDays(now, 30))),
         lastRecharge: {
-            date: lastRechargeTime ? format(new Date(lastRechargeTime), 'MM-dd') : '-',
-            time: lastRechargeTime ? format(new Date(lastRechargeTime), 'HH:mm') : '',
+            date: lastRechargeTime ? formatDate(new Date(lastRechargeTime), 'MM-dd') : '-',
+            time: lastRechargeTime ? formatDate(new Date(lastRechargeTime), 'HH:mm') : '',
             amount: lastRechargeAmount > 0 ? formatInteger(lastRechargeAmount) : '-',
             daysAgo: daysSinceRecharge
         },
@@ -377,20 +394,20 @@ export default function App() {
             <h1 className="text-lg font-bold tracking-tight">Nakiri <span className="text-zinc-400 font-normal">Electricity</span></h1>
           </div>
           <div className="flex items-center gap-2">
-             {/* 远程更新按钮 */}
+             {/* 打开项目按钮 */}
              <button 
-              onClick={handleManualScrape}
+              onClick={() => window.open('https://github.com/Dainsleif233/NakiriElectricity', '_blank')}
               className="p-2 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-colors text-zinc-500 group relative"
-              title="打开 GitHub Actions（手动触发更新）"
+              title="GitHub 项目"
             >
-              <CloudLightning size={20} className="group-hover:text-yellow-500 transition-colors" />
+              <Github size={20} className="group-hover:text-yellow-500 transition-colors" />
             </button>
 
             {/* 本地刷新按钮 */}
             <button 
               onClick={() => fetchData(false)}
               className="p-2 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-colors text-zinc-500"
-              title={lastUpdate ? `刷新数据（上次更新: ${format(new Date(lastUpdate), 'MM-dd HH:mm')}）` : "刷新数据"}
+              title={lastUpdate ? `刷新数据（上次更新: ${formatDate(new Date(lastUpdate), 'MM-dd HH:mm')}）` : "刷新数据"}
             >
               <RefreshCw size={20} className={cn(loading && "animate-spin")} />
             </button>
@@ -577,7 +594,7 @@ export default function App() {
                         fontSize={12} 
                         tickMargin={10}
                         minTickGap={40}
-                        tickFormatter={(value) => format(new Date(value), timeRange <= 7 ? "MM-dd HH:mm" : "MM-dd")}
+                        tickFormatter={(value) => formatDate(new Date(value), timeRange <= 7 ? "MM-dd HH:mm" : "MM-dd")}
                       />
                       <YAxis 
                         width={45}
@@ -588,7 +605,7 @@ export default function App() {
                         allowDataOverflow={false} 
                       />
                       <Tooltip 
-                        labelFormatter={(value) => format(new Date(value), "yyyy-MM-dd HH:mm")}
+                        labelFormatter={(value) => formatDate(new Date(value), "yyyy-MM-dd HH:mm")}
                         formatter={(value) => [`${formatInteger(value)} kWh`, '剩余电量']}
                         contentStyle={{ 
                           backgroundColor: darkMode ? 'rgba(24, 24, 27, 0.9)' : 'rgba(255, 255, 255, 0.9)',
