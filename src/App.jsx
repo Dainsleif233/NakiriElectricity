@@ -272,72 +272,53 @@ export default function App() {
     const now = new Date();
     const currentKWh = roomData[roomData.length - 1].kWh;
 
-    const getConsumption = (sinceDate) => {
+    // 按日历日分组，记录每日首条/末条 kWh
+    const dailyMap = {};
+    roomData.forEach(d => {
+        const day = formatDate(new Date(d.timestamp), 'yyyy-MM-dd');
+        if (!dailyMap[day]) dailyMap[day] = { first: d.kWh, last: d.kWh };
+        dailyMap[day].last = d.kWh; // 不断更新最后一条
+    });
+
+    const sortedDates = Object.keys(dailyMap).sort();
+
+    // 每日消耗 = 当日首条kWh - 次日首条kWh（覆盖从当日首次读到次日首次读间的全部消耗）
+    const dailyConsumptions = {};
+    sortedDates.forEach((date, i) => {
+        if (i < sortedDates.length - 1) {
+            const diff = dailyMap[date].first - dailyMap[sortedDates[i + 1]].first;
+            if (diff > 0.1) {
+                dailyConsumptions[date] = diff;
+            }
+        }
+    });
+
+    // 昨日消耗（日历日）
+    const yesterday = formatDate(subDays(now, 1), 'yyyy-MM-dd');
+    const consumptionDaily = dailyConsumptions[yesterday] || 0;
+
+    // 最大/最小日消耗
+    let maxDaily = { val: 0, date: '-' };
+    let minDaily = { val: Infinity, date: '-' };
+    Object.entries(dailyConsumptions).forEach(([date, val]) => {
+        if (val > maxDaily.val) maxDaily = { val, date: date.slice(5) };
+        if (val < minDaily.val) minDaily = { val, date: date.slice(5) };
+    });
+    if (minDaily.val === Infinity) minDaily.val = 0;
+
+    // 期间累计消耗：对期间内相邻记录的递减求和
+    const getConsumptionInPeriod = (days) => {
+        const sinceDate = subDays(now, days);
         const recent = roomData.filter(d => new Date(d.timestamp) >= sinceDate);
         let sum = 0;
         for (let i = 1; i < recent.length; i++) {
             const diff = recent[i-1].kWh - recent[i].kWh;
-            if (diff > 0) sum += diff; 
+            if (diff > 0) sum += diff;
         }
         return sum;
     };
 
-    const getLatestPointConsumption = (days) => {
-        const latestRecord = roomData[roomData.length - 1];
-        const targetTime = subDays(new Date(latestRecord.timestamp), days);
-
-        for (let i = roomData.length - 2; i >= 0; i--) {
-            const recordTime = new Date(roomData[i].timestamp);
-            if (recordTime <= targetTime) {
-                const diff = roomData[i].kWh - latestRecord.kWh;
-                return diff > 0 ? diff : 0;
-            }
-        }
-
-        return 0;
-    };
-
-    const consumptionDaily = getLatestPointConsumption(1);
-
-    const dailyMap = {};
-    roomData.forEach(d => {
-        const day = formatDate(new Date(d.timestamp), 'yyyy-MM-dd');
-        if (!dailyMap[day]) dailyMap[day] = [];
-        dailyMap[day].push(d.kWh);
-    });
-
-    const sortedDates = Object.keys(dailyMap).sort();
-    const getDayLastKWh = (date) => {
-        const values = dailyMap[date];
-        return values && values.length > 0 ? values[values.length - 1] : null;
-    };
-    const getNextDayFirstKWh = (date) => {
-        const idx = sortedDates.indexOf(date);
-        return idx >= 0 && idx < sortedDates.length - 1 ? dailyMap[sortedDates[idx + 1]][0] : null;
-    };
-
-    let maxDaily = { val: 0, date: '-' };
-    let minDaily = { val: 9999, date: '-' };
-
-    sortedDates.forEach(date => {
-        const lastKWh = getDayLastKWh(date);
-        const nextFirstKWh = getNextDayFirstKWh(date);
-        if (lastKWh === null || nextFirstKWh === null) return;
-
-        let dailySum = 0;
-        if (lastKWh > nextFirstKWh) {
-            dailySum = lastKWh - nextFirstKWh;
-        }
-
-        if (dailySum > 0.1) {
-            if (dailySum > maxDaily.val) maxDaily = { val: dailySum, date: date.slice(5) };
-            if (dailySum < minDaily.val) minDaily = { val: dailySum, date: date.slice(5) };
-        }
-    });
-    if (minDaily.val === 9999) minDaily.val = 0;
-
-    const consumption24h = getConsumption(subDays(now, 1));
-    const consumption7d = getConsumption(subDays(now, 7));
+    const consumption7d = getConsumptionInPeriod(7);
 
     let lastRechargeTime = null;
     let lastRechargeAmount = 0;
@@ -370,7 +351,7 @@ export default function App() {
             ...minDaily,
             val: formatInteger(minDaily.val)
         },
-        cons30d: formatInteger(getConsumption(subDays(now, 30))),
+        cons30d: formatInteger(getConsumptionInPeriod(30)),
         lastRecharge: {
             date: lastRechargeTime ? formatDate(new Date(lastRechargeTime), 'MM-dd') : '-',
             time: lastRechargeTime ? formatDate(new Date(lastRechargeTime), 'HH:mm') : '',
