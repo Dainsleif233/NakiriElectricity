@@ -260,9 +260,14 @@ export default function App() {
   }, [rawData, timeRange, targetRoom]);
 
   // 2. Calculate Stats
+  // 数据特征：kWh 是「剩余电量」，单调递减；充值表现为相邻读数间的向上跳变。
+  // 真实消耗 = 相邻读数间的每一次下降（kWh[i-1] - kWh[i]），充值 = 每一次上升。
+  // 将每个消耗事件归属到「该下降读数所在的日历日」，再按需聚合，
+  // 这样无论充值发生在一天中的何时、无论两次读数之间夹了多少条平读数，
+  // 任意时刻查看都能得到正确的数值。
   const stats = useMemo(() => {
     if (!rawData.length || !targetRoom) return null;
-    
+
     const roomData = rawData
         .filter(d => String(d.room_id) === String(targetRoom))
         .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
@@ -271,33 +276,43 @@ export default function App() {
 
     const now = new Date();
     const currentKWh = roomData[roomData.length - 1].kWh;
+    const latestTimestamp = roomData[roomData.length - 1].timestamp;
 
-    // 按日历日分组，记录每日首条/末条 kWh
-    const dailyMap = {};
-    roomData.forEach(d => {
-        const day = formatDate(new Date(d.timestamp), 'yyyy-MM-dd');
-        if (!dailyMap[day]) dailyMap[day] = { first: d.kWh, last: d.kWh };
-        dailyMap[day].last = d.kWh; // 不断更新最后一条
-    });
-
-    const sortedDates = Object.keys(dailyMap).sort();
-
-    // 每日消耗 = 当日首条kWh - 次日首条kWh（覆盖从当日首次读到次日首次读间的全部消耗）
-    const dailyConsumptions = {};
-    sortedDates.forEach((date, i) => {
-        if (i < sortedDates.length - 1) {
-            const diff = dailyMap[date].first - dailyMap[sortedDates[i + 1]].first;
-            if (diff > 0.1) {
-                dailyConsumptions[date] = diff;
-            }
+    // 1) 逐对扫描相邻读数，拆解为「消耗事件」与「充值事件」
+    //    消耗事件：kWh 下降，记 (dropTimestamp, dayKey, amount)
+    //    充值事件：kWh 上升，记 (rechargeTimestamp, amount)
+    const consumptionEvents = []; // { ts: Date, day: 'yyyy-MM-dd', amount: number }
+    const rechargeEvents = [];    // { ts: Date, amount: number }
+    for (let i = 1; i < roomData.length; i++) {
+        const prev = roomData[i - 1];
+        const curr = roomData[i];
+        const diff = prev.kWh - curr.kWh; // 正=消耗，负=充值
+        if (diff > 0.1) {
+            const ts = new Date(curr.timestamp);
+            consumptionEvents.push({
+                ts,
+                day: formatDate(ts, 'yyyy-MM-dd'),
+                amount: diff,
+            });
+        } else if (diff < -0.1) {
+            rechargeEvents.push({
+                ts: new Date(curr.timestamp),
+                amount: curr.kWh - prev.kWh,
+            });
         }
+    }
+
+    // 2) 按日历日聚合消耗
+    const dailyConsumptions = {};
+    consumptionEvents.forEach(ev => {
+        dailyConsumptions[ev.day] = (dailyConsumptions[ev.day] || 0) + ev.amount;
     });
 
-    // 昨日消耗（日历日）
+    // 3) 昨日消耗（日历日，以本地时区计算）
     const yesterday = formatDate(subDays(now, 1), 'yyyy-MM-dd');
     const consumptionDaily = dailyConsumptions[yesterday] || 0;
 
-    // 最大/最小日消耗
+    // 4) 最大/最小日消耗（仅统计有消耗事件的日子）
     let maxDaily = { val: 0, date: '-' };
     let minDaily = { val: Infinity, date: '-' };
     Object.entries(dailyConsumptions).forEach(([date, val]) => {
@@ -306,38 +321,36 @@ export default function App() {
     });
     if (minDaily.val === Infinity) minDaily.val = 0;
 
-    // 期间累计消耗：对期间内相邻记录的递减求和
+    // 5) 期间累计消耗：取窗口内所有消耗事件求和。
+    //    用「数据最新读数时间」而非 wall-clock now 作为右端，
+    //    避免在数据停滞时把空窗口计入，也避免凌晨刚过、当天还没读数时统计失真。
     const getConsumptionInPeriod = (days) => {
-        const sinceDate = subDays(now, days);
-        const recent = roomData.filter(d => new Date(d.timestamp) >= sinceDate);
-        let sum = 0;
-        for (let i = 1; i < recent.length; i++) {
-            const diff = recent[i-1].kWh - recent[i].kWh;
-            if (diff > 0) sum += diff;
-        }
-        return sum;
+        const sinceDate = subDays(latestTimestamp, days);
+        return consumptionEvents
+            .filter(ev => ev.ts >= sinceDate)
+            .reduce((sum, ev) => sum + ev.amount, 0);
     };
 
     const consumption7d = getConsumptionInPeriod(7);
 
+    // 6) 上次充值：取最后一个充值事件
     let lastRechargeTime = null;
     let lastRechargeAmount = 0;
-    for (let i = roomData.length - 1; i > 0; i--) {
-        const curr = roomData[i].kWh;
-        const prev = roomData[i-1].kWh;
-        if (curr > prev + 1.0) { 
-            lastRechargeTime = roomData[i].timestamp;
-            lastRechargeAmount = curr - prev;
-            break;
-        }
+    if (rechargeEvents.length > 0) {
+        const last = rechargeEvents[rechargeEvents.length - 1];
+        lastRechargeTime = last.ts;
+        lastRechargeAmount = last.amount;
     }
 
+    // 7) 预计可用天数：用最近 7 天日均消耗推算
+    //    dailyAvg = 7 天总消耗 / 已覆盖天数（最多 7），避免数据不足 7 天时被低估
+    const daysCovered = Math.min(7, differenceInDays(latestTimestamp, roomData[0].timestamp) || 1);
+    const dailyAvg = daysCovered > 0 ? consumption7d / daysCovered : 0;
     let daysRemaining = '0';
-    const dailyAvg = consumption7d / 7;
     if (dailyAvg > 0) daysRemaining = (currentKWh / dailyAvg).toFixed(0);
 
-    const daysSinceRecharge = lastRechargeTime 
-        ? differenceInDays(now, new Date(lastRechargeTime)) 
+    const daysSinceRecharge = lastRechargeTime
+        ? differenceInDays(now, lastRechargeTime)
         : '-';
 
     return {
