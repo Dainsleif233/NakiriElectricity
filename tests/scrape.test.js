@@ -32,7 +32,21 @@ function startFakeApi(responses) {
   });
 }
 
-const okPayload = kWh => ({ payload: { code: 200, map: { showData: true, data: { lastSd: String(kWh) } } } });
+/**
+ * 成功响应必须与线上一致：showData 是**对象**（房间信息/查询时间/当前剩余），读数在 data.lastSd。
+ * 夹具曾经写成 `showData: true`（照着假设而非抓包），于是把一个错误契约固化进了测试，
+ * 让 `map.showData !== true` 这种在线上必然失败的判定也能全绿。
+ */
+const okPayload = kWh => ({
+  payload: {
+    code: 200,
+    message: 'success',
+    map: {
+      showData: { '房间信息': '校本部-C区-1-1-101', '查询时间': '2026-10-16 22:06:19', '当前剩余': `${kWh}.00` },
+      data: { lastSd: String(kWh) },
+    },
+  },
+});
 
 function runScraper({ url, dataFile, outputFile, extraArgs = [], extraEnv = {} }) {
   return new Promise(resolve => {
@@ -251,6 +265,44 @@ test('showData=false：房间参数错误，不重试', async t => {
   const result = await runScraper({ url: api.url, dataFile: path.join(dir, 'data.json'), outputFile: path.join(dir, 'out.txt') });
   assert.equal(result.status, 1);
   assert.equal(api.state.calls, 1);
+});
+
+test('真实响应形状：showData 是对象（非布尔 true）也能正常采集', async t => {
+  // 回归：e25891b 把判定写成 `map.showData !== true`，而线上 showData 一直是对象，
+  // 于是每次采集都在第一次请求后失败（GitHub Actions run 38913060748）。
+  const api = await startFakeApi([{
+    payload: {
+      code: 200,
+      map: {
+        showData: { '房间信息': '校本部C区1栋1-101', '查询时间': '2026-10-16 22:06:19', '当前剩余': '59.00' },
+        data: { lastSd: '59' },
+      },
+    },
+  }]);
+  t.after(() => api.close());
+  const dir = tmpDir();
+  const dataFile = path.join(dir, 'data.json');
+  const outputFile = path.join(dir, 'out.txt');
+
+  const result = await runScraper({ url: api.url, dataFile, outputFile });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(api.state.calls, 1, '房间参数正确时不应重试');
+  assert.equal(JSON.parse(fs.readFileSync(dataFile, 'utf8')).history[0].kWh, 59);
+  assert.equal(readOutputs(outputFile).scrape_status, 'success');
+});
+
+test('showData 是对象但缺少 data.lastSd：失败退出，绝不写盘', async t => {
+  const api = await startFakeApi([{
+    payload: { code: 200, map: { showData: { '房间信息': '校本部C区1栋1-101', '当前剩余': '59.00' } } },
+  }]);
+  t.after(() => api.close());
+  const dir = tmpDir();
+  const dataFile = path.join(dir, 'data.json');
+
+  const result = await runScraper({ url: api.url, dataFile, outputFile: path.join(dir, 'out.txt') });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /缺少 data\.lastSd/);
+  assert.equal(fs.existsSync(dataFile), false, '校验失败时不能创建数据文件');
 });
 
 test('data.json 解析失败：中止而不是清空历史', async t => {

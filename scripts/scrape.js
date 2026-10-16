@@ -176,7 +176,10 @@ async function requestOnce(params) {
 
   const map = payload.map;
   if (!map || typeof map !== 'object') throw new HttpError('响应缺少 map 字段', { retryable: true });
-  if (map.showData !== true) throw new HttpError(`showData=${map.showData}，房间参数可能不正确`, { retryable: false });
+  // 线上响应的 showData 是对象（如 {房间信息, 查询时间, 当前剩余}），不是布尔 true；
+  // 只有房间参数不正确时才是 false。这里只能做真值判断：
+  // 写成 `showData !== true` 会让每一次采集都在第一次请求后失败（见 38913060748）。
+  if (!map.showData) throw new HttpError(`showData=${JSON.stringify(map.showData)}，房间参数可能不正确`, { retryable: false });
 
   return map;
 }
