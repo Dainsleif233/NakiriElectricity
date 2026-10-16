@@ -1,10 +1,15 @@
 {
   "name": "nakiri-electricity-cloudflare",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build"
+    "build": "vite build",
+    "preview": "vite preview",
+    "scrape": "node scripts/scrape.js",
+    "analyze": "node scripts/analyze-data.js",
+    "compact": "node scripts/compact-data.js",
+    "test": "node --test tests/electricity.test.js tests/scrape.test.js"
   },
   "dependencies": {
     "framer-motion": "^11.18.2",

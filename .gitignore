@@ -37,3 +37,7 @@ dist-ssr
 
 # Testing
 coverage
+
+# 迁移/校验产生的临时文件
+public/*.bak
+public/*.tmp
