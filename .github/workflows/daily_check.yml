@@ -2,21 +2,27 @@ name: Daily Electricity Check
 
 on:
   schedule:
-    # 每3小时运行一次 (0:00, 3:00, 6:00, ...)
-    - cron: '0 */3 * * *'
+    # 每 3 小时采集一次，但避开 :00 整点。
+    # 真实数据（680 条读数）显示：GitHub 定时任务在整点最拥堵，实测 p50 间隔 4.3h、p90 8.0h、最大 23.8h，
+    # 错峰后能更稳定地落在源站每日结算（本地 05:00 前后）之后。
+    - cron: '7 */3 * * *'
   workflow_dispatch: # 允许手动触发
+
+# 同一时刻只跑一个采集任务，避免两次运行同时改写 data.json
+concurrency:
+  group: electricity-scrape
+  cancel-in-progress: false
 
 jobs:
   scrape-and-commit:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
-        with:
-          fetch-depth: 0 # 获取完整历史，便于分析
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -32,27 +38,25 @@ jobs:
           BUILDING: ${{ secrets.BUILDING }}
           FLOOR: ${{ secrets.FLOOR }}
           ROOM: ${{ secrets.ROOM }}
-        run: |
-          echo "Starting scraper..."
-          if ! node scripts/scrape.js; then
-            echo "Scraper failed, exiting gracefully."
-            echo "scrape_status=failed" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          echo "scrape_status=success" >> $GITHUB_OUTPUT
-        continue-on-error: false
+        # 失败就让 job 变红：旧版用 `if ! node ...; then exit 0` 把失败吞掉了，
+        # 结果下面的 failure() 步骤永远不会执行，断流时没有任何通知。
+        run: node scripts/scrape.js
+
+      - name: Report data quality
+        if: always()
+        run: node scripts/analyze-data.js
 
       - name: Check Threshold
         id: threshold
-        if: steps.scrape.outputs.scrape_status == 'success'
+        if: steps.scrape.outputs.changed == 'true'  # 只有读数真的变了才可能触发/解除阈值告警
         env:
           THRESHOLD: ${{ secrets.THRESHOLD || '30' }}
-        run: |
-          node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('public/data.json','utf8')); const history=Array.isArray(data.history)?data.history:[]; const latest=history[history.length-1]; const currentKwh=latest?.kWh; const threshold=Number(process.env.THRESHOLD || 30); if (typeof currentKwh !== 'number' || Number.isNaN(currentKwh)) { console.log('No valid kWh found, treating as not below threshold.'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'current_kwh=\n'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'threshold=' + threshold + '\n'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'is_below_threshold=false\n'); process.exit(0); } console.log('Current kWh: ' + currentKwh + ', threshold: ' + threshold); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'current_kwh=' + currentKwh + '\n'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'threshold=' + threshold + '\n'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'is_below_threshold=' + String(currentKwh < threshold) + '\n');"
+        run: node scripts/check-threshold.js
 
       - name: Commit and Push changes
         id: commit
-        if: steps.scrape.outputs.scrape_status == 'success'
+        # updated = 文件需要重写（读数变化，或只是刷新存活标记）；changed 专指读数真的变了
+        if: steps.scrape.outputs.updated == 'true'
         run: |
           git add public/data.json
           git config user.name "github-actions[bot]"
@@ -70,18 +74,44 @@ jobs:
       - name: Comment On Low Balance Commit
         if: steps.commit.outputs.committed == 'true' && steps.threshold.outputs.is_below_threshold == 'true'
         uses: actions/github-script@v9
+        env:
+          CROSSED_BELOW: ${{ steps.threshold.outputs.crossed_below }}
+          CURRENT_KWH: ${{ steps.threshold.outputs.current_kwh }}
+          THRESHOLD_KWH: ${{ steps.threshold.outputs.threshold }}
+          ESTIMATE_DAYS: ${{ steps.threshold.outputs.estimate_days }}
+          COMMIT_SHA: ${{ steps.commit.outputs.commit_sha }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            const crossed = process.env.CROSSED_BELOW === 'true';
+            const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+
+            // 低于阈值期间每天都会产生新的提交（用电跳变 + 心跳），
+            // 因此只在「刚刚跌破」或「24 小时内还没提醒过」时评论，避免刷屏。
+            const comments = await github.paginate(github.rest.repos.listCommitComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100,
+            });
+            const recentAlert = comments.some(c => c.body.includes('电量不足') && c.created_at > since);
+
+            if (!crossed && recentAlert) {
+              core.info('24 小时内已提醒过，跳过本次评论。');
+              return;
+            }
+
+            const days = process.env.ESTIMATE_DAYS;
             await github.rest.repos.createCommitComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              commit_sha: '${{ steps.commit.outputs.commit_sha }}',
-              body: '当前电量为 ${{ steps.threshold.outputs.current_kwh }}，已不足 ${{ steps.threshold.outputs.threshold }}，请尽快充值！'
-            })
+              commit_sha: process.env.COMMIT_SHA,
+              body: `⚠️ 电量不足：当前 **${process.env.CURRENT_KWH} kWh**，已低于阈值 ${process.env.THRESHOLD_KWH} kWh`
+                + (days ? `，按最近 7 天日均消耗预计还可用 ${days} 天。` : '。')
+                + '请尽快充值！',
+            });
 
       - name: Notify on failure
         if: failure()
         run: |
-          echo "::error::数据采集失败！请检查环境变量配置和网络连接。"
+          echo "::error::数据采集失败！请检查 TOKEN 是否过期、环境变量配置和网络连接。"
           exit 1
