@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
+import { collapseValueRuns, computeStats, formatIn, runtimeTzOffsetMinutes } from './lib/electricity.js';
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
 import { Moon, Sun, Zap, Activity, RefreshCw, TrendingDown, TrendingUp, BatteryCharging, CalendarClock, CalendarDays, Home, Github, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -8,39 +9,22 @@ function cn(...inputs) {
   return inputs.filter(Boolean).join(' ');
 }
 
-function padNumber(value) {
-  return String(value).padStart(2, '0');
-}
-
-function formatDate(value, pattern) {
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) return '-';
-
-  const tokens = {
-    yyyy: String(date.getFullYear()),
-    MM: padNumber(date.getMonth() + 1),
-    dd: padNumber(date.getDate()),
-    HH: padNumber(date.getHours()),
-    mm: padNumber(date.getMinutes()),
-  };
-
-  return pattern.replace(/yyyy|MM|dd|HH|mm/g, token => tokens[token]);
-}
+// 时区与日历口径统一交给 src/lib/electricity.js（与采集脚本、数据报告共用一套规则）
+const formatDate = formatIn;
 
 function subDays(value, days) {
   const date = value instanceof Date ? value : new Date(value);
   return new Date(date.getTime() - days * 24 * 60 * 60 * 1000);
 }
 
-function differenceInDays(laterDate, earlierDate) {
-  const later = laterDate instanceof Date ? laterDate : new Date(laterDate);
-  const earlier = earlierDate instanceof Date ? earlierDate : new Date(earlierDate);
-  return Math.floor((later.getTime() - earlier.getTime()) / (24 * 60 * 60 * 1000));
-}
-
-function formatInteger(value) {
+/**
+ * 读数格式化：源站读数是 1 kWh 台阶（680/680 条样本小数位为 0），
+ * 因此整数直接显示；若将来出现小数（scripts/analyze-data.js 会告警）则保留一位。
+ */
+function formatKWh(value) {
   const numericValue = Number(value);
-  return Number.isFinite(numericValue) ? numericValue.toFixed(0) : '-';
+  if (!Number.isFinite(numericValue)) return '-';
+  return Number.isInteger(numericValue) ? String(numericValue) : numericValue.toFixed(1);
 }
 
 const TIME_RANGES = [
@@ -151,6 +135,11 @@ export default function App() {
   const [roomDisplayName, setRoomDisplayName] = useState('Loading...'); 
   const [timeRange, setTimeRange] = useState(7);
   const [lastUpdate, setLastUpdate] = useState(null);
+  // 最后一次「成功采集」的时刻（room_info.lastCheckedAt）：
+  // 它与「最后一次数值变化」是两件事 —— 假期可能几天不跳变，但采集本身是正常的
+  const [lastCheckedAt, setLastCheckedAt] = useState(null);
+  // 用于计算「数据停滞了多久」；每次拉取数据时刷新，避免长时间挂着的页面显示过期判断
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     if (darkMode) document.documentElement.classList.add('dark');
@@ -180,7 +169,9 @@ export default function App() {
             setTargetRoom(data.room_info.roomId);
             setRoomDisplayName(data.room_info.displayName || 'Unknown Room');
             setLastUpdate(data.room_info.updatedAt);
+            setLastCheckedAt(data.room_info.lastCheckedAt ?? data.room_info.updatedAt ?? null);
           }
+          setNow(Date.now());
           
           if (data.history && Array.isArray(data.history)) {
              // Filter out invalid entries and sort by timestamp
@@ -254,127 +245,29 @@ export default function App() {
       }
     });
 
-    return Array.from(groupedMap.values())
+    const points = Array.from(groupedMap.values())
         .sort((a, b) => a.timestamp - b.timestamp)
         .filter(d => d.val !== null && d.val !== undefined);
+
+    // 折叠「数值相同」的连续点：否则图上会出现一段段水平线，看起来像电量在缓慢变化。
+    // 旧格式数据（含同值心跳）和未压缩的原始数据都能靠这一步得到正确观感。
+    return collapseValueRuns(points, point => point.val);
   }, [rawData, timeRange, targetRoom]);
 
   // 2. Calculate Stats
-  // 数据特征：kWh 是「剩余电量」，单调递减；充值表现为相邻读数间的向上跳变。
-  // 真实消耗 = 相邻读数间的每一次下降（kWh[i-1] - kWh[i]），充值 = 每一次上升。
-  // 将每个消耗事件归属到「该下降读数所在的日历日」，再按需聚合，
-  // 这样无论充值发生在一天中的何时、无论两次读数之间夹了多少条平读数，
-  // 任意时刻查看都能得到正确的数值。
-  const stats = useMemo(() => {
-    if (!rawData.length || !targetRoom) return null;
-
-    const roomData = rawData
-        .filter(d => String(d.room_id) === String(targetRoom))
-        .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-
-    if (roomData.length === 0) return null;
-
-    const now = new Date();
-    const currentKWh = roomData[roomData.length - 1].kWh;
-    const latestTimestamp = roomData[roomData.length - 1].timestamp;
-
-    // 1) 逐对扫描相邻读数，拆解为「消耗事件」与「充值事件」
-    //    消耗事件：kWh 下降，记 (dropTimestamp, dayKey, amount)
-    //    充值事件：kWh 上升，记 (rechargeTimestamp, amount)
-    const consumptionEvents = []; // { ts: Date, day: 'yyyy-MM-dd', amount: number }
-    const rechargeEvents = [];    // { ts: Date, amount: number }
-    for (let i = 1; i < roomData.length; i++) {
-        const prev = roomData[i - 1];
-        const curr = roomData[i];
-        const diff = prev.kWh - curr.kWh; // 正=消耗，负=充值
-        if (diff > 0.1) {
-            const ts = new Date(curr.timestamp);
-            consumptionEvents.push({
-                ts,
-                day: formatDate(ts, 'yyyy-MM-dd'),
-                amount: diff,
-            });
-        } else if (diff < -0.1) {
-            rechargeEvents.push({
-                ts: new Date(curr.timestamp),
-                amount: curr.kWh - prev.kWh,
-            });
-        }
-    }
-
-    // 2) 按日历日聚合消耗
-    const dailyConsumptions = {};
-    consumptionEvents.forEach(ev => {
-        dailyConsumptions[ev.day] = (dailyConsumptions[ev.day] || 0) + ev.amount;
-    });
-
-    // 3) 昨日消耗（日历日，以本地时区计算）
-    const yesterday = formatDate(subDays(now, 1), 'yyyy-MM-dd');
-    const consumptionDaily = dailyConsumptions[yesterday] || 0;
-
-    // 4) 最大/最小日消耗（仅统计有消耗事件的日子）
-    let maxDaily = { val: 0, date: '-' };
-    let minDaily = { val: Infinity, date: '-' };
-    Object.entries(dailyConsumptions).forEach(([date, val]) => {
-        if (val > maxDaily.val) maxDaily = { val, date: date.slice(5) };
-        if (val < minDaily.val) minDaily = { val, date: date.slice(5) };
-    });
-    if (minDaily.val === Infinity) minDaily.val = 0;
-
-    // 5) 期间累计消耗：取窗口内所有消耗事件求和。
-    //    用「数据最新读数时间」而非 wall-clock now 作为右端，
-    //    避免在数据停滞时把空窗口计入，也避免凌晨刚过、当天还没读数时统计失真。
-    const getConsumptionInPeriod = (days) => {
-        const sinceDate = subDays(latestTimestamp, days);
-        return consumptionEvents
-            .filter(ev => ev.ts >= sinceDate)
-            .reduce((sum, ev) => sum + ev.amount, 0);
-    };
-
-    const consumption7d = getConsumptionInPeriod(7);
-
-    // 6) 上次充值：取最后一个充值事件
-    let lastRechargeTime = null;
-    let lastRechargeAmount = 0;
-    if (rechargeEvents.length > 0) {
-        const last = rechargeEvents[rechargeEvents.length - 1];
-        lastRechargeTime = last.ts;
-        lastRechargeAmount = last.amount;
-    }
-
-    // 7) 预计可用天数：用最近 7 天日均消耗推算
-    //    dailyAvg = 7 天总消耗 / 已覆盖天数（最多 7），避免数据不足 7 天时被低估
-    const daysCovered = Math.min(7, differenceInDays(latestTimestamp, roomData[0].timestamp) || 1);
-    const dailyAvg = daysCovered > 0 ? consumption7d / daysCovered : 0;
-    let daysRemaining = '0';
-    if (dailyAvg > 0) daysRemaining = (currentKWh / dailyAvg).toFixed(0);
-
-    const daysSinceRecharge = lastRechargeTime
-        ? differenceInDays(now, lastRechargeTime)
-        : '-';
-
-    return {
-        current: formatInteger(currentKWh),
-        consDaily: formatInteger(consumptionDaily),
-        maxDaily: {
-            ...maxDaily,
-            val: formatInteger(maxDaily.val)
-        },
-        minDaily: {
-            ...minDaily,
-            val: formatInteger(minDaily.val)
-        },
-        cons30d: formatInteger(getConsumptionInPeriod(30)),
-        lastRecharge: {
-            date: lastRechargeTime ? formatDate(new Date(lastRechargeTime), 'MM-dd') : '-',
-            time: lastRechargeTime ? formatDate(new Date(lastRechargeTime), 'HH:mm') : '',
-            amount: lastRechargeAmount > 0 ? formatInteger(lastRechargeAmount) : '-',
-            daysAgo: daysSinceRecharge
-        },
-        estimateDays: daysRemaining
-    };
-
-  }, [rawData, targetRoom]);
+  // 后处理规则集中在 src/lib/electricity.js，与采集脚本、数据质量报告共用同一套领域逻辑。
+  // 实测数据特征（2026-05-29 ~ 2026-10-16，680 条读数）：
+  //   • kWh 是「剩余电量」，1 kWh 台阶，源站每天只结算一次（137 次下降跳变 / 137 个用电日）；
+  //   • 下降 = 用电，上升 = 充值；观测到的上升是「充值 − 期间消耗」的净跳变，只能标成 ≈；
+  //   • 结算发生在本地凌晨 5 点前后，因此「用电日」按 05:00 换日，而不是按观测时刻的日历日；
+  //   • 近 24 小时消耗以最新读数为锚，不做日历归因，任何时刻都有定义。
+  const stats = useMemo(() => computeStats({
+    history: rawData,
+    roomId: targetRoom,
+    now,
+    tzOffsetMinutes: runtimeTzOffsetMinutes(),
+    lastCheckedAt,
+  }), [rawData, targetRoom, now, lastCheckedAt]);
 
   return (
     <div className="min-h-screen bg-zinc-100 dark:bg-black text-zinc-900 dark:text-zinc-100 font-sans selection:bg-red-500/30 transition-colors duration-300">
@@ -401,7 +294,7 @@ export default function App() {
             <button 
               onClick={() => fetchData(false)}
               className="p-2 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-colors text-zinc-500"
-              title={lastUpdate ? `刷新数据（上次更新: ${formatDate(new Date(lastUpdate), 'MM-dd HH:mm')}）` : "刷新数据"}
+              title={lastCheckedAt ? `刷新数据（上次采集: ${formatDate(new Date(lastCheckedAt), 'MM-dd HH:mm')}）` : "刷新数据"}
             >
               <RefreshCw size={20} className={cn(loading && "animate-spin")} />
             </button>
@@ -423,6 +316,29 @@ export default function App() {
         <AnimatePresence>
           {error && <ErrorAlert message={error} onRetry={() => fetchData(true)} />}
         </AnimatePresence>
+
+        {/* 数据断流提示：心跳间隔 12h、阈值 24h，超过即说明 Actions 没在跑或接口挂了 */}
+        {!error && stats?.staleness.stale && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-6 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl flex items-center gap-3"
+          >
+            <CalendarClock size={20} className="text-amber-600 dark:text-amber-400 flex-shrink-0" />
+            <div className="flex-1">
+              <div className="text-sm font-medium text-amber-800 dark:text-amber-200">
+                数据已 {Math.floor(stats.staleness.ageMs / 3600000)} 小时未更新
+              </div>
+              <div className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
+                最后一次成功采集是 {formatDate(stats.staleness.lastCheckedMs, 'yyyy-MM-dd HH:mm')}
+                {stats.staleness.sinceLastStepMs !== null && (
+                  <> ，读数最后一次变化已是 {Math.floor(stats.staleness.sinceLastStepMs / 86400000)} 天前</>
+                )}
+                。请检查 GitHub Actions 的 Daily Electricity Check 是否仍在运行。
+              </div>
+            </div>
+          </motion.div>
+        )}
 
         <div className="grid grid-cols-1 xl:grid-cols-4 gap-6 md:gap-8">
           
@@ -452,29 +368,33 @@ export default function App() {
                   <>
                     <StatCard 
                         title="当前电量" 
-                        value={`${stats.current} kWh`} 
-                        subtext="实时剩余" 
+                        value={`${formatKWh(stats.current)} kWh`} 
+                        subtext={stats.staleness.stale
+                          ? `数据 ${Math.floor(stats.staleness.ageMs / 3600000)}h 未更新`
+                          : '实时剩余'} 
                         icon={Zap} 
                         delay={1} 
                         highlight={true}
                     />
                     <StatCard 
-                        title="昨日消耗" 
-                        value={`${stats.consDaily} kWh`} 
-                        subtext="最近波动" 
+                        title="24小时消耗" 
+                        value={`${formatKWh(stats.consLast24h.value)} kWh`} 
+                        subtext={stats.consDaily.day
+                          ? `昨日(${stats.consDaily.day.slice(5)}) ${formatKWh(stats.consDaily.value)} kWh`
+                          : '最近波动'} 
                         icon={Activity} 
                         delay={2} 
                     />
                     <StatCard 
                         title="单日最大消耗" 
-                        value={`${stats.maxDaily.val} kWh`} 
+                        value={`${formatKWh(stats.maxDaily.val)} kWh`} 
                         subtext={stats.maxDaily.date} 
                         icon={TrendingUp} 
                         delay={3} 
                     />
                     <StatCard 
                         title="单日最小消耗" 
-                        value={`${stats.minDaily.val} kWh`} 
+                        value={`${formatKWh(stats.minDaily.val)} kWh`} 
                         subtext={stats.minDaily.date} 
                         icon={TrendingDown} 
                         delay={4} 
@@ -525,16 +445,17 @@ export default function App() {
                     />
                     <StatCard 
                         title="上次充值" 
-                        value={stats.lastRecharge.date} 
-                        subtext={stats.lastRecharge.time}
+                        value={stats.lastRecharge ? formatDate(stats.lastRecharge.ts, 'MM-dd') : '-'} 
+                        // 观测到的上升是「充值 − 期间消耗」的净跳变，因此只能标 ≈
+                        subtext={stats.lastRecharge ? `≈${formatKWh(stats.lastRecharge.amount)} kWh` : '-'}
                         icon={BatteryCharging} 
                         delay={6}
                         compact={true}
                     />
                     <StatCard 
                         title="预计可用" 
-                        value={`${stats.estimateDays}`} 
-                        subtext="天" 
+                        value={`${stats.estimateDays} 天`} 
+                        subtext={`${stats.dailyAvg.toFixed(1)} kWh/天`}
                         icon={CalendarClock} 
                         delay={7}
                         compact={true}
@@ -555,8 +476,18 @@ export default function App() {
                     </span>
                 </h2>
                 <div className="flex items-center gap-2 text-sm text-zinc-500">
-                  <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-                  Live
+                  {/* 心跳间隔 12h，超过 18h 说明采集链路断了（scripts/analyze-data.js 会给出同样判断） */}
+                  {stats?.staleness.stale ? (
+                    <>
+                      <div className="w-2 h-2 rounded-full bg-amber-500"></div>
+                      数据 {Math.floor(stats.staleness.ageMs / 3600000)}h 未更新
+                    </>
+                  ) : (
+                    <>
+                      <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                      Live
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -595,12 +526,12 @@ export default function App() {
                         stroke={darkMode ? "#666" : "#999"} 
                         fontSize={12} 
                         domain={['auto', 'auto']}
-                        tickFormatter={(value) => formatInteger(value)}
+                        tickFormatter={(value) => formatKWh(value)}
                         allowDataOverflow={false} 
                       />
                       <Tooltip 
                         labelFormatter={(value) => formatDate(new Date(value), "yyyy-MM-dd HH:mm")}
-                        formatter={(value) => [`${formatInteger(value)} kWh`, '剩余电量']}
+                        formatter={(value) => [`${formatKWh(value)} kWh`, '剩余电量']}
                         contentStyle={{ 
                           backgroundColor: darkMode ? 'rgba(24, 24, 27, 0.9)' : 'rgba(255, 255, 255, 0.9)',
                           borderColor: darkMode ? '#333' : '#eee',
