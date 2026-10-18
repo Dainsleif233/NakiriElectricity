@@ -88,12 +88,12 @@ jobs:
 
             // 低于阈值期间每天都会产生新的提交（用电跳变 + 心跳），
             // 因此只在「刚刚跌破」或「24 小时内还没提醒过」时评论，避免刷屏。
-            const comments = await github.paginate(github.rest.repos.listCommitComments, {
+            const comments = await github.paginate(github.rest.repos.listCommitCommentsForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               per_page: 100,
             });
-            const recentAlert = comments.some(c => c.body.includes('电量不足') && c.created_at > since);
+            const recentAlert = comments.some(c => c.body?.includes('电量不足') && c.created_at > since);
 
             if (!crossed && recentAlert) {
               core.info('24 小时内已提醒过，跳过本次评论。');
