@@ -62,7 +62,7 @@
 | `node scripts/analyze-data.js [--json]` | 数据特征与质量报告，CI 里写入 Step Summary 并在异常时 `::warning::` |
 | `node scripts/compact-data.js [--write]` | 把历史压成「只留变化」；写入前强制校验跳变序列等价 |
 | `node scripts/check-threshold.js` | 阈值判断，区分「刚刚跌破」与「持续偏低」，并给出预计可用天数 |
-| `npm test` | 35 项单测与采集端到端测试（含真实数据不变量与线上契约守护） |
+| `npm test` | 38 项单测与采集端到端测试（含真实数据不变量、网络失败容忍与线上契约守护） |
 
 ## 已知限制
 
@@ -72,4 +72,8 @@
   因此该判断放在采集时刻（距上次 `lastCheckedAt` >24h 时告警），而不是对历史做统计。
 - 采集脚本的失败是显式的：令牌失效、响应不是 JSON、`data.json` 解析失败都会以非 0 退出码结束并让 job 变红，
   且**绝不**改写已有的 `data.json`。
+- **网络层失败（`fetch failed`）是唯一的例外**：DNS/连接被拒/超时这类抖动按「跳过一次采样」处理 —— 退出码 0、
+  不写盘，只在 Step Summary 和 `::warning::` 里留痕（`scrape_status=network-failed`）。代价是偶发断流不会立刻报警，
+  所以用 `lastCheckedAt` 兜底：距上次成功采集超过 48h（`NETWORK_FAILURE_GRACE_HOURS`）仍然判红。
+  诊断看日志里 `error.cause` 的错误码（如 `ECONNREFUSED`），外层永远只有 `TypeError: fetch failed`。
 - **源站响应结构**：`ykt.ujs.edu.cn/charge/feeitem/getThirdData` 成功时 `map.showData` 为包含房间与余额文本的对象（不是布尔 `true`），实际数值读数位于 `map.data.lastSd`。参数不匹配时为 `false`。采集校验必须使用真值判断，不可强比布尔值。

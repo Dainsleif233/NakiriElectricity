@@ -91,6 +91,18 @@ function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'nakiri-'));
 }
 
+/**
+ * 找一个此刻确定没人监听的端口：先绑再关，随后的连接会被立即拒绝（ECONNREFUSED），
+ * 用来复现托管 runner 上 `TypeError: fetch failed` 这类网络层失败。
+ */
+async function deadEndpoint() {
+  const server = http.createServer();
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${server.address().port}/`;
+  await new Promise(done => server.close(done));
+  return url;
+}
+
 test('首次采集：创建 data.json 并写入 start 记录', async t => {
   const api = await startFakeApi([okPayload(348)]);
   t.after(() => api.close());
@@ -330,4 +342,76 @@ test('缺少环境变量：立即失败并说明缺了什么', async t => {
   });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /缺少环境变量/);
+});
+
+test('网络层失败（连接被拒）：跳过本轮，不判红、不写盘', async () => {
+  const dir = tmpDir();
+  const dataFile = path.join(dir, 'data.json');
+  const outputFile = path.join(dir, 'out.txt');
+  const original = JSON.stringify({
+    room_info: { roomId: '1-1-101', lastCheckedAt: new Date(Date.now() - 2 * 3600000).toISOString() },
+    history: [{ timestamp: '2026-10-01T00:00:00.000Z', room_id: '1-1-101', kWh: 100, src: 'start' }],
+  });
+  fs.writeFileSync(dataFile, original);
+
+  const result = await runScraper({
+    url: await deadEndpoint(),
+    dataFile,
+    outputFile,
+    extraArgs: ['--retries', '1'],
+  });
+
+  // 39346534322 这类失败不应该让 job 变红：只是少一次采样，数据新鲜度由前端陈旧横幅兜底
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(fs.readFileSync(dataFile, 'utf8'), original, '网络失败不得改写数据文件');
+  const outputs = readOutputs(outputFile);
+  assert.equal(outputs.scrape_status, 'network-failed');
+  assert.equal(outputs.changed, 'false');
+  assert.equal(outputs.updated, 'false');
+  assert.match(result.stderr, /网络层/);
+});
+
+test('网络层失败且距上次成功采集超过宽限期：仍然判红', async () => {
+  const dir = tmpDir();
+  const dataFile = path.join(dir, 'data.json');
+  const outputFile = path.join(dir, 'out.txt');
+  const original = JSON.stringify({
+    room_info: { roomId: '1-1-101', lastCheckedAt: new Date(Date.now() - 72 * 3600000).toISOString() },
+    history: [{ timestamp: '2026-10-15T00:00:00.000Z', room_id: '1-1-101', kWh: 100, src: 'start' }],
+  });
+  fs.writeFileSync(dataFile, original);
+
+  const result = await runScraper({
+    url: await deadEndpoint(),
+    dataFile,
+    outputFile,
+    extraArgs: ['--retries', '1'],
+  });
+
+  // 容忍抖动不等于容忍断流：超过 48h 没采到数据就该有人收到通知
+  assert.equal(result.status, 1);
+  assert.equal(readOutputs(outputFile).scrape_status, 'failed');
+  assert.equal(fs.readFileSync(dataFile, 'utf8'), original);
+  assert.match(result.stderr, /宽限期/);
+});
+
+test('宽限期可放宽：NETWORK_FAILURE_GRACE_HOURS 覆盖默认值', async () => {
+  const dir = tmpDir();
+  const dataFile = path.join(dir, 'data.json');
+  const outputFile = path.join(dir, 'out.txt');
+  fs.writeFileSync(dataFile, JSON.stringify({
+    room_info: { roomId: '1-1-101', lastCheckedAt: new Date(Date.now() - 72 * 3600000).toISOString() },
+    history: [{ timestamp: '2026-10-15T00:00:00.000Z', room_id: '1-1-101', kWh: 100, src: 'start' }],
+  }));
+
+  const result = await runScraper({
+    url: await deadEndpoint(),
+    dataFile,
+    outputFile,
+    extraArgs: ['--retries', '1'],
+    extraEnv: { NETWORK_FAILURE_GRACE_HOURS: '96' },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readOutputs(outputFile).scrape_status, 'network-failed');
 });

@@ -193,7 +193,7 @@ async function fetchReading(params) {
     } catch (error) {
       lastError = error;
       const retryable = !(error instanceof HttpError) || error.retryable;
-      log(`  失败: ${error.message}`);
+      log(`  失败: ${error instanceof HttpError ? error.message : describeNetworkError(error)}`);
       if (!retryable || attempt === ARGS.retries) break;
       const wait = ARGS.backoffMs * 2 ** (attempt - 1) + Math.random() * 500;
       log(`  ${(wait / 1000).toFixed(1)}s 后重试`);
@@ -201,6 +201,61 @@ async function fetchReading(params) {
     }
   }
   throw lastError;
+}
+
+/**
+ * 判定「网络层」失败：DNS 解析失败、连接被拒/重置、TLS 握手失败、超时。
+ * 这些都不是源站返回的业务错误（HttpError），而是海外 runner 到校园一卡通网关那一跳的抖动。
+ */
+function isNetworkError(error) {
+  if (error instanceof HttpError) return false;
+  return ['TypeError', 'TimeoutError', 'AbortError'].includes(error?.name);
+}
+
+/** Node 内置 fetch 只报 `TypeError: fetch failed`，真正的错误码在 error.cause 上，必须带出来才可诊断。 */
+function describeNetworkError(error) {
+  const cause = error?.cause;
+  const codes = [
+    cause?.code,
+    ...(Array.isArray(cause?.errors) ? cause.errors.map(inner => inner?.code) : []),
+  ];
+  const unique = [...new Set(codes.filter(Boolean))].join('/');
+  if (unique) return `${error.message}（${unique}）`;
+  return cause?.message ? `${error.message}（${cause.message}）` : error.message;
+}
+
+/**
+ * 网络层失败不判红（39346534322 等：三次重试全在 10s 内 fetch failed）。
+ * 不写盘、不提交，只是少一次采样；存活由 lastCheckedAt 承载，前端会自己显示陈旧横幅。
+ * 但链路真的断了不能一直静默：距上次成功采集超过宽限期（默认 48h）仍然判红。
+ */
+function handleNetworkFailure(error, data) {
+  const detail = describeNetworkError(error);
+  const graceHours = Number(process.env.NETWORK_FAILURE_GRACE_HOURS || 48);
+  const previousMs = Date.parse(data.room_info?.lastCheckedAt || '') || 0;
+  const ageHours = previousMs ? (Date.now() - previousMs) / 3600000 : null;
+
+  if (ageHours !== null && ageHours > graceHours) {
+    fail(`抓取失败: ${detail}；距上次成功采集 ${ageHours.toFixed(1)}h，已超过宽限期 ${graceHours}h`);
+  }
+
+  const ageText = ageHours === null ? '未知（data.json 中没有 lastCheckedAt）' : `${ageHours.toFixed(1)}h`;
+  console.error(`⚠ 抓取失败（网络层）: ${detail}`);
+  console.error(`⚠ 距上次成功采集 ${ageText}，宽限期 ${graceHours}h：本轮按「跳过一次采样」处理，不判红、不写盘`);
+  if (process.env.CI) console.log(`::warning::抓取失败（网络层）: ${detail}；本轮已跳过，数据未改动`);
+
+  output('scrape_status', 'network-failed');
+  output('network_error', detail.replace(/\s+/g, ' '));
+  // 与 fail() 的产出保持同构，下游 step 的 == 'true' 判断才能确定性地跳过
+  output('changed', 'false');
+  output('updated', 'false');
+
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    fs.appendFileSync(
+      process.env.GITHUB_STEP_SUMMARY,
+      `\n### 采集跳过（网络层失败）\n\n- 错误: \`${detail}\`\n- 距上次成功采集: ${ageText}（宽限期 ${graceHours}h）\n- 本轮未修改任何数据，等待下一轮定时采集\n`,
+    );
+  }
 }
 
 /** 从接口返回中取出剩余电量，并做合理性校验。 */
@@ -274,7 +329,9 @@ async function main() {
   try {
     map = await fetchReading(params);
   } catch (error) {
-    fail(`抓取失败: ${error.message}`);
+    // 业务失败（令牌失效、响应不是 JSON、房间参数不对）继续判红；网络层失败按跳过处理
+    if (!isNetworkError(error)) fail(`抓取失败: ${error.message}`);
+    return handleNetworkFailure(error, data);
   }
 
   let kWh;

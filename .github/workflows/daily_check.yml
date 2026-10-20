@@ -40,6 +40,9 @@ jobs:
           ROOM: ${{ secrets.ROOM }}
         # 失败就让 job 变红：旧版用 `if ! node ...; then exit 0` 把失败吞掉了，
         # 结果下面的 failure() 步骤永远不会执行，断流时没有任何通知。
+        # 例外：网络层失败（fetch failed / ECONNREFUSED / 超时，见 scrape.js 的 isNetworkError）按
+        # 「跳过一次采样」处理——不判红、不写盘；但距上次成功采集超过 48h
+        # （NETWORK_FAILURE_GRACE_HOURS）仍会判红，避免链路真的断了还一直静默。
         run: node scripts/scrape.js
 
       - name: Report data quality
@@ -113,5 +116,5 @@ jobs:
       - name: Notify on failure
         if: failure()
         run: |
-          echo "::error::数据采集失败！请检查 TOKEN 是否过期、环境变量配置和网络连接。"
+          echo "::error::数据采集失败！优先检查 TOKEN 是否过期、环境变量是否正确；若是 fetch failed 且超过宽限期，说明网络链路真的断了（见 scripts/scrape.js 的 handleNetworkFailure）。"
           exit 1
