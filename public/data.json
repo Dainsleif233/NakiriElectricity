@@ -2,8 +2,8 @@
   "room_info": {
     "roomId": "1-1-101",
     "displayName": "校本部-C区-1-1-101",
-    "updatedAt": "2026-11-22T01:09:41.305Z",
-    "lastCheckedAt": "2026-11-22T19:28:43.468Z"
+    "updatedAt": "2026-11-23T12:16:24.889Z",
+    "lastCheckedAt": "2026-11-23T12:16:24.889Z"
   },
   "history": [
     {"timestamp":"2026-05-29T09:45:07.727Z","room_id":"1-1-101","kWh":348,"src":"start"},
@@ -184,6 +184,7 @@
     {"timestamp":"2026-11-19T02:29:25.923Z","room_id":"1-1-101","kWh":78,"src":"change"},
     {"timestamp":"2026-11-20T02:14:31.969Z","room_id":"1-1-101","kWh":74,"src":"change"},
     {"timestamp":"2026-11-21T02:07:27.122Z","room_id":"1-1-101","kWh":69,"src":"change"},
-    {"timestamp":"2026-11-22T01:09:41.305Z","room_id":"1-1-101","kWh":64,"src":"change"}
+    {"timestamp":"2026-11-22T01:09:41.305Z","room_id":"1-1-101","kWh":64,"src":"change"},
+    {"timestamp":"2026-11-23T12:16:24.889Z","room_id":"1-1-101","kWh":58,"src":"change"}
   ]
 }
